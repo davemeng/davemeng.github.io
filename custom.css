@@ -1,0 +1,26 @@
+.carouselimage {
+    opacity: 0.8;
+    filter: alpha(opacity=50); /* For IE8 and earlier */
+}
+
+.my-parallax{
+	height: 80vh;
+	/*background-image: url("galaxy_background.jpg");*/
+	background-repeat: no-repeat;
+	background-size: cover;
+	background-position: center;
+	background-attachment: fixed;
+	
+}
+
+.tindertick{
+    color: green;
+
+}
+
+.tindercross{
+    color: red;
+    border: 1px solid grey;
+    /*border-radius: 90%;*/
+
+}
