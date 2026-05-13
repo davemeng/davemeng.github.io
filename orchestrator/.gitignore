@@ -1,0 +1,23 @@
+# Real config and client data never go in the repo — only schemas/templates do.
+routing.yaml
+clients/*/
+!clients/_client-template/
+
+# Secrets / credentials of any kind
+*.key
+*.pem
+*-credentials.json
+*-service-account*.json
+.env
+.env.*
+.dev.vars
+
+# whatsmeow session store
+*.db
+session/
+
+# build artifacts (added in later phases)
+node_modules/
+dist/
+.wrangler/
+bridge/bin/

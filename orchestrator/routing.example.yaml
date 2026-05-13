@@ -1,0 +1,64 @@
+# Routing + risk config for the orchestrator.
+#
+# Copy to routing.yaml and fill in real values. The agent reads this to decide
+# which client an inbound item belongs to and whether it may be auto-sent.
+#
+# Matching order:
+#   1. Rule match on this file: sender email/domain, sender phone, or — for Plaud
+#      transcripts — a meeting-title pattern or a participant email.
+#   2. If no rule matches, the classifier reads the candidate clients' playbook.md
+#      files and picks one (or `triage`) with a rationale.
+#
+# risk_threshold semantics: an item the classifier rates BELOW this level may be
+# auto-sent; at or above it, the item is staged in pending-approval/. So:
+#   - risk_threshold: high  → only HIGH items stage; LOW and MED auto-send.
+#   - risk_threshold: med   → MED and HIGH stage; only LOW auto-sends.   (recommended default)
+#   - risk_threshold: low   → everything stages; nothing auto-sends.     (safest)
+
+default_project: triage          # where unrouted items go
+
+# Optional global caps (the agent / ingress enforce these; alerts when exceeded).
+limits:
+  per_client_monthly_token_cap: 2000000   # soft cap; pause + notify when hit
+  daily_spend_alert_usd: 5
+
+projects:
+
+  acme:
+    drive_folder_id: "REPLACE_WITH_DRIVE_FOLDER_ID"   # ID of Clients/Acme/ in your cloud store
+    display_name: "Acme Corp"
+    emails:
+      - "@acme.com"                 # any sender at this domain
+      - "ceo@acme.io"               # a specific external address
+      - "jane.counsel@lawfirm.com"  # their lawyer — note: counsel mail is MATERIAL by global rule
+    phones:
+      - "+15551234567"              # E.164; matched against whatsmeow sender JID
+    plaud_title_patterns:
+      - "Acme"                      # substring match on the Plaud meeting title
+      - "Project Falcon"            # the engagement's internal codename
+    plaud_participant_emails:
+      - "@acme.com"
+    risk_threshold: med
+
+  beta:
+    drive_folder_id: "REPLACE_WITH_DRIVE_FOLDER_ID"
+    display_name: "Beta Holdings"
+    emails:
+      - "@beta.io"
+    phones:
+      - "+15557654321"
+    plaud_title_patterns:
+      - "Beta"
+    risk_threshold: high            # this client: stage everything material, never auto-send
+
+  # Add one block per client. Onboarding a client = create Clients/<Name>/ from
+  # the template, fill CLAUDE.md/playbook.md/contacts.yaml, connect it to the
+  # cowork project, then add a block here.
+
+# The triage "project" is a real folder + cowork project where unrouted items
+# land. Re-routing from triage is logged to feedback/ so the reflection run can
+# propose a new rule above.
+triage:
+  drive_folder_id: "REPLACE_WITH_DRIVE_FOLDER_ID"
+  display_name: "Triage"
+  risk_threshold: low              # never auto-send anything from triage

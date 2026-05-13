@@ -1,0 +1,46 @@
+# Contacts that matter for this client engagement.
+#
+# Used for routing (does this email/WhatsApp/meeting belong to this client?) and
+# to give the drafter the right context about who it's replying to. Routing rules
+# in ../../routing.yaml reference these — keep the two consistent (this file is
+# the human-readable detail; routing.yaml is what the matcher uses).
+#
+# `always_review: true` means: any reply to/from this person is MATERIAL,
+# regardless of topic — it gets staged in pending-approval/, never auto-sent.
+
+client: "<Client name>"
+
+contacts:
+
+  - name: "<Full name>"
+    role: "<e.g. CEO>"
+    side: client            # client | counterparty | adviser | internal
+    emails:
+      - "<name@client.com>"
+    phones:
+      - "<+15551234567>"    # E.164
+    always_review: false
+
+  - name: "<Full name>"
+    role: "<e.g. General Counsel>"
+    side: client
+    emails:
+      - "<gc@client.com>"
+    always_review: true     # legal — stage everything
+
+  - name: "<Full name>"
+    role: "<e.g. their M&A lawyer>"
+    side: counterparty
+    emails:
+      - "<partner@lawfirm.com>"
+    always_review: true
+
+# Plaud meeting routing for this client (substring match on the meeting title,
+# and/or participant email domains). Mirror these into routing.yaml's
+# plaud_title_patterns / plaud_participant_emails for the actual matcher.
+plaud:
+  title_patterns:
+    - "<Client name>"
+    - "<Project codename>"
+  participant_emails:
+    - "@client.com"
