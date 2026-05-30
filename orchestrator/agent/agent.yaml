@@ -1,34 +1,24 @@
 # Managed Agent definition for the cross-project orchestrator (v1: single agent).
 #
-# This is the portable description of the agent. When you create the agent on the
-# Claude Developer Platform, map these fields onto whatever the Managed Agents
-# config format expects — the substance (system prompt, MCP servers, input
-# schema, success rubric, model) is what matters; field names may differ.
+# Portable description of the agent. When you create the agent on the Claude
+# Developer Platform, map these fields onto whatever the Managed Agents config
+# format expects — the substance (system prompt, MCP servers, input schema,
+# completion schema, success rubric, model) is what matters; field names may
+# differ.
 #
-# v1 keeps it to ONE agent doing classify → act inline. Split into a Haiku
-# classifier sub-agent + a Sonnet drafter sub-agent later only if cost/quality
-# needs it (the plan's Phase 1 note).
+# v1 = ONE agent doing classify -> act inline. Split into a Haiku classifier
+# sub-agent + a Sonnet drafter sub-agent later only if cost/quality needs it.
 
 name: cross-project-orchestrator
 version: 1
 
-# Default model for the agent's reasoning/drafting. Use a Sonnet-tier model so
-# drafts are good; the agent is told to keep classification cheap (and you can
-# move classification to a Haiku sub-agent later).
-model: claude-sonnet-4-6
+model: claude-sonnet-4-6        # Sonnet-tier so drafts are good; classification stays cheap by tiered reads.
+max_turns: 20                   # hard ceiling so a runaway run can't burn budget.
 
 system_prompt_file: ./system-prompt.md
 
-# Hard ceiling per invocation so a runaway run can't burn budget.
-max_turns: 20
-
-# MCP servers the agent may use. Wire these up in the platform; the agent's
-# tool access is pre-authorized (no permission prompts mid-run).
-#   - google_drive: read/write the Clients/ tree (service-account credentials,
-#     scoped to the Clients/ folder; EU data region).
-#   - gmail: read threads, send replies, apply the "processed" label.
-#   - whatsmeow: send WhatsApp replies — REMOTE server hosted on the Hetzner
-#     bridge VM, behind a bearer token. Not attached until Phase 4.
+# MCP servers wired in the platform. Tool access is pre-authorised; no
+# permission prompts mid-run.
 mcp_servers:
   - id: google_drive
     purpose: "Read/write the per-client folders under Clients/ (state substrate)."
@@ -37,91 +27,153 @@ mcp_servers:
     purpose: "Read email threads, send replies, label processed mail."
     required: true
   - id: whatsmeow
-    purpose: "Send WhatsApp replies. Remote (Hetzner bridge), token-gated."
-    required: false   # attached in Phase 4
+    purpose: "Send WhatsApp replies. REMOTE server on the Hetzner bridge VM, token-gated."
+    required: false              # attached in Phase 4
 
-# What the ingress (Cloudflare Worker) passes in on each invocation.
+# Files in the Drive root the agent always references. Not passed in.
+config_sources:
+  routing_yaml:     "Clients/routing.yaml"
+  global_playbook:  "Clients/global-playbook.md"
+  formats_spec:     "Clients/FORMATS.md"   # mirror the repo's FORMATS.md here
+
+# Soft I/O targets — used as guardrails by the rubric, not hard limits.
+io_targets:
+  max_drive_reads_per_invocation: 8       # tier the reads; parallelise where possible
+  max_drive_writes_per_invocation: 4
+  p50_latency_seconds: 6                  # process mode; reflect runs may exceed
+  p95_latency_seconds: 20
+
+# ---- INPUT: what the ingress (Cloudflare Worker) passes in per invocation. ----
 input_schema:
   type: object
-  required: [mode]
+  required: [mode, item_id]
   properties:
     mode:
       enum: [process, approve, reject, reflect]
+
+    # Deterministic stable id for the item — derived by the ingress per
+    # FORMATS.md ("id derivation"). Same id for retries; used to dedupe.
+    item_id:
+      type: string
+      pattern: "^[a-f0-9]{12}$"
+
+    # Canonical provider id — Gmail Message-ID, WhatsApp message ID, or Plaud
+    # recording id. Kept alongside item_id so the ingress can prove dedupe.
+    provider_message_id:
+      type: string
+
     # --- mode: process ---
     channel:        { enum: [gmail, whatsapp, plaud] }
-    item_id:        { type: string, description: "Stable id derived from the source message/recording id." }
-    sender:         { type: string, description: "Email address or display name (gmail/whatsapp)." }
-    participants:   { type: array,  items: { type: string }, description: "Plaud meeting participants." }
+    sender:         { type: string, description: "Email address (gmail), phone JID (whatsapp). Unset for plaud." }
+    participants:   { type: array,  items: { type: string }, description: "Plaud meeting participants (emails / names)." }
     subject:        { type: string, description: "Email subject or Plaud meeting title." }
-    body:           { type: string, description: "Email body / WhatsApp text / Plaud transcript+summary." }
+    snippet:        { type: string, description: "First ~280 chars of body. Use this for routing; fetch the full body lazily." }
+    body_uri:       { type: string, description: "Drive/MCP URI to fetch the full body when needed." }
     thread_ref:     { type: string, description: "Provider thread id, for sending the reply in-thread." }
     occurred_at:    { type: string, format: date-time }
-    routing_hint:   { type: object, description: "Pre-computed rule match from routing.yaml, if any: {client, matched_by}." }
+
+    # Pre-computed rule match from the ingress — if present, the agent skips
+    # the routing.yaml read and other clients' contexts.
+    routing_hint:
+      type: object
+      required: [client, matched_by]
+      properties:
+        client:       { type: string }
+        matched_by:   { enum: [sender_email, sender_domain, sender_phone, plaud_title, plaud_participant] }
+        matched_value:{ type: string }
+
     # --- mode: approve | reject ---
-    ref_id:         { type: string, description: "The pending-approval/<ref_id>.md being approved/rejected." }
-    edited_body:    { type: string, description: "If you edited the draft before approving (else the draft stands)." }
+    ref_id:         { type: string, description: "<id> of the pending-approval/<ref_id>.md being actioned." }
+    edited_body:    { type: string, description: "If the advisor edited the draft before approving." }
     reason:         { type: string, description: "Required for reject; optional note for approve." }
+
     # --- mode: reflect ---
-    reflect_scope:  { oneOf: [ { type: string, enum: [all] }, { type: string, description: "a client id" } ] }
+    reflect_scope:
+      oneOf:
+        - { type: string, enum: [all] }
+        - { type: string, description: "a client id" }
 
-# Config the agent reads from Drive (not passed in): routing.yaml at the Clients/
-# root, global-playbook.md at the Clients/ root, and per-client CLAUDE.md /
-# playbook.md / contacts.yaml.
-config_sources:
-  routing_yaml: "Clients/routing.yaml"
-  global_playbook: "Clients/global-playbook.md"
+# ---- OUTPUT: the JSON the agent returns on its final turn. ----
+completion_schema:
+  type: object
+  required: [mode, action, human_summary]
+  properties:
+    mode:           { enum: [process, approve, reject, reflect] }
+    client:         { type: [string, "null"], description: "routed client id, or 'triage', or null on reflect=all." }
+    risk:           { enum: [low, med, high, null] }
+    action:         { enum: [sent, staged, logged, deduped, routed_to_triage, failed] }
+    pending_ref:    { type: [string, "null"], description: "pending-approval/<id> — present iff action == staged." }
+    outbox_ref:     { type: [string, "null"], description: "outbox/<id> — present iff action == sent." }
+    human_summary:  { type: string, description: "One short line for the advisor's notification." }
+    failure_reason: { type: [string, "null"], description: "Required iff action == failed." }
+    metrics:        { type: [object, "null"], description: "Required iff mode == reflect (shape in system-prompt.md)." }
 
-# Success rubric — the agent's run is judged against this.
+# ---- SUCCESS RUBRIC — judged per run. ----
 outcome:
   rubric: |
     A run SUCCEEDS when, for the given mode, all of the following hold:
 
     mode=process:
-      1. The item is routed to a client id (or `triage`) with a recorded
-         rationale (rule match if routing_hint present, else classifier).
-      2. Clients/<client>/inbox/<ts>-<channel>-<item_id>.md is written with the
-         front-matter spec in FORMATS.md.
-      3. If the item is a message and its risk is BELOW the client's
-         risk_threshold: a reply was drafted and SENT via the right MCP
-         (gmail/whatsmeow), Clients/<client>/outbox/<item_id>.md written, and a
-         Clients/<client>/decisions/<date>-<slug>.md entry appended (auto: true).
-      4. If the item is a message and its risk is AT OR ABOVE the threshold:
-         NOTHING was sent; Clients/<client>/pending-approval/<item_id>.md was
-         written (draft + rationale + suggested_action per FORMATS.md).
-      5. If the item is a Plaud transcript: Clients/<client>/meetings/<date>-<slug>.md
-         written (summary + action items + decisions), decisions/ updated for
-         anything settled, and any follow-up email/amendment staged in
-         pending-approval/ (auto-send a follow-up only if playbook.md whitelists it).
-      6. The completion summary (returned to the caller) is one line: client,
-         what happened, risk, and the pending ref if any.
+      1. The item is routed to a client id (or `triage`). If routing_hint was
+         set, routed_by=rule and rule_match echoes hint.matched_by; otherwise
+         routed_by=classifier with a one-line rationale.
+      2. Clients/<client>/inbox/<ts>-<item_id>.md is written per FORMATS.md
+         with the full classification (risk + risk_reason citing the
+         global-playbook clause).
+      3. If the item is a message and risk is STRICTLY BELOW the client's
+         risk_threshold: the reply was sent via the right MCP in-thread, the
+         processed label / WhatsApp marker was applied, outbox/<item_id>.md was
+         written (with sent_at + provider_message_id of the outbound), and a
+         decisions/<date>-<slug>.md entry was appended with auto=true.
+      4. If the item is a message and risk is AT OR ABOVE threshold: nothing
+         was sent; pending-approval/<item_id>.md was written with
+         kind=draft_reply, the draft, risk_reason, and suggested_action.
+      5. If the item is a Plaud transcript: meetings/<date>-<slug>.md was
+         written; decisions/ updated for anything settled; any follow-up
+         drafted and staged as pending-approval/<followup-id>.md with
+         kind=meeting_followup (a follow-up auto-sends only if the client
+         playbook whitelists it).
+      6. The completion JSON matches completion_schema; human_summary is one
+         short line.
 
     mode=approve:
-      - The reply in pending-approval/<ref_id>.md (or edited_body if provided)
-        was sent via the right MCP; the file moved to outbox/<ref_id>.md with
-        sent_at + message_id; a decisions/ entry was appended; a
-        feedback/<ref_id>.json record written (your_action: approved or
-        approved_with_edits, with the diff if edited).
+      - For kind=draft_reply or kind=meeting_followup: the draft (or
+        edited_body) was sent via the right MCP; the file moved to
+        outbox/<ref_id>.md with sent_at + provider_message_id; a decisions/
+        entry was appended (auto=false); feedback/<ref_id>.json written.
+      - For kind=config_proposal: the patch was applied to the named
+        target_file; the proposal moved to outbox/ (as audit copy);
+        decisions/ appended with kind=lesson; feedback/<ref_id>.json written.
 
     mode=reject:
-      - No send. A feedback/<ref_id>.json record written (your_action: rejected,
-        your_reason: the supplied reason). pending-approval/<ref_id>.md marked
-        superseded (or moved aside). Caller notified it was not sent.
+      - No send. feedback/<ref_id>.json written with your_action=rejected and
+        your_reason. pending-approval/<ref_id>.md marked superseded and moved
+        to pending-approval/.rejected/.
 
     mode=reflect:
-      - Recent feedback/ records read for the scope; patterns recurring >=2x
-        identified; for each, a proposal written to the relevant client's (or the
-        triage/global) pending-approval/ folder describing the exact edit to
-        playbook.md / CLAUDE.md / routing.yaml / global-playbook.md / examples/.
-        No config file changed directly. Learning metrics included in the
-        completion summary.
+      - Recent feedback/ records read for the scope. Patterns (defined in
+        system-prompt.md) recurring >=2x identified. For each, exactly one
+        proposal written to pending-approval/ with kind=config_proposal,
+        target_file, and a minimal patch. NO config file modified directly.
+        Capped at 5 per client per run; cross-client patterns target
+        Clients/global-playbook.md. metrics block populated in the completion.
 
-    A run FAILS if it sends anything material without staging, invents facts/
-    figures/commitments, writes secrets into a client folder, or guesses a route
-    instead of using `triage` when unsure.
+    EFFICIENCY (soft — affects the rubric only via io_targets):
+      - Drive reads are tiered and parallelised; routing_hint short-circuits.
+      - When multiple writes are needed, they are issued in parallel.
+      - The agent bails fast (action=deduped) if it sees an existing
+        inbox/<id>.md or outbox/<id>.md for the same item_id.
 
-# Where the agent reports when done — the ingress wires a webhook to its
-# /webhook/agent endpoint, which turns the completion summary into your
-# notification (WhatsApp first, email fallback).
+    A run FAILS if it: sends anything material without staging; invents
+    facts/figures/commitments; writes secrets into a client folder; guesses
+    a route instead of using triage when unsure; edits a config file outside
+    a kind=config_proposal approval.
+
+# ---- COMPLETION HOOK ----
+# The ingress wires the agent's completion webhook to its /webhook/agent
+# endpoint, which turns the completion JSON into the advisor's notification
+# (WhatsApp first, email fallback) and uses pending_ref / outbox_ref for any
+# follow-up calls (e.g. /approve).
 completion:
   webhook: true
-  payload_includes: [mode, client, risk, action, pending_ref, human_summary, metrics]
+  payload: completion_schema

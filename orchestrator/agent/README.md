@@ -9,9 +9,13 @@ Agents) — **a personal Max subscription does not cover this**; see the plan's
 ## Files
 
 - `agent.yaml` — portable agent definition: model, MCP servers, input schema,
-  success rubric, completion webhook. Map onto the platform's actual config
-  format when you create the agent.
+  **completion schema**, success rubric, completion webhook. Map onto the
+  platform's actual config format when you create the agent.
 - `system-prompt.md` — the system prompt (referenced by `agent.yaml`).
+
+`agent.yaml`'s `input_schema` and `completion_schema` are the contract with the
+ingress; `system-prompt.md`'s "Completion contract" section must stay aligned
+with `completion_schema` — change one, change both.
 
 ## To instantiate (Phase 1 steps from the runbook)
 
@@ -30,44 +34,60 @@ Agents) — **a personal Max subscription does not cover this**; see the plan's
 
 ## Verify (Phase 1)
 
-Invoke the agent manually (no ingress yet) with a synthetic payload:
+Use a test client folder + temporary `risk_threshold: low` for Acme so nothing
+real gets sent. `item_id` must be 12 hex chars — derive it from the
+`provider_message_id` per FORMATS.md's `id` derivation, or just use a stable
+placeholder for tests. Invoke the agent manually (no ingress yet):
 
 ```json
 {
   "mode": "process",
   "channel": "gmail",
-  "item_id": "test-pricing-1",
+  "item_id": "1111aaaa1111",
+  "provider_message_id": "<test-pricing-1@example.com>",
   "sender": "ceo@acme.io",
   "subject": "Re: Project Falcon — proposed fee",
-  "body": "Can you confirm the day rate we discussed? And can we lock it for 6 months?",
+  "snippet": "Can you confirm the day rate we discussed?",
+  "body_uri": "drive://test/pricing-1.eml",
   "thread_ref": "test-thread-1",
-  "occurred_at": "2026-05-13T09:00:00Z"
+  "occurred_at": "2026-05-13T09:00:00Z",
+  "routing_hint": { "client": "acme", "matched_by": "sender_email", "matched_value": "ceo@acme.io" }
 }
 ```
 
-Expect: `Clients/Acme/inbox/...test-pricing-1.md` written, classified **HIGH**
-(pricing), and `Clients/Acme/pending-approval/test-pricing-1.md` written with a
-draft + a rationale that names the pricing/lock-in as the reason. Then try a
+Expect: `Clients/Acme/inbox/<ts>-1111aaaa1111.md` written, classified **HIGH**
+(forced by global-playbook §1 — price/fees), and
+`Clients/Acme/pending-approval/1111aaaa1111.md` written with `kind: draft_reply`
+and a `risk_reason` naming the pricing rule. Completion JSON has
+`action: "staged"` and `pending_ref: "pending-approval/1111aaaa1111"`. Then a
 low-risk payload:
 
 ```json
 {
   "mode": "process",
   "channel": "gmail",
-  "item_id": "test-sched-1",
+  "item_id": "2222bbbb2222",
+  "provider_message_id": "<test-sched-1@example.com>",
   "sender": "ceo@acme.io",
   "subject": "Re: weekly sync",
-  "body": "Tuesday 3pm works for me — see you then.",
+  "snippet": "Tuesday 3pm works for me — see you then.",
+  "body_uri": "drive://test/sched-1.eml",
   "thread_ref": "test-thread-2",
-  "occurred_at": "2026-05-13T09:05:00Z"
+  "occurred_at": "2026-05-13T09:05:00Z",
+  "routing_hint": { "client": "acme", "matched_by": "sender_email", "matched_value": "ceo@acme.io" }
 }
 ```
 
-Expect: classified **LOW**; with Acme's `risk_threshold: med` it would auto-send
-a brief confirmation — but since Gmail send is wired but you may not want a real
-send during testing, point it at a test thread or temporarily set Acme's
-`risk_threshold: low` so it stages instead. Confirm the `outbox/` + `decisions/`
-(or `pending-approval/`) artifacts and the one-line completion summary.
+Expect: classified **LOW**; with Acme's `risk_threshold: low` it stages instead
+of sending (so you can review without a real send). Flip to `med` and re-run to
+confirm the auto-send path produces `outbox/` + `decisions/` (`auto: true`).
+
+Idempotency check: invoke either payload twice with the same `item_id`; the
+second invocation must return `action: "deduped"` with no new files.
+
+Also exercise the I/O efficiency rules: confirm that with `routing_hint` set,
+the agent does not read `routing.yaml` or other clients' folders (look at the
+Drive read trace if your platform exposes it).
 
 ## v1 scope
 
