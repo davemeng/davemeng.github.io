@@ -1,0 +1,66 @@
+# Routing + risk config for the orchestrator.
+#
+# Copy to routing.yaml and fill in real values. The ingress reads this to attempt
+# a rule match on every inbound item BEFORE invoking the agent — when a rule
+# matches, the ingress passes routing_hint to the agent and the agent skips
+# loading other clients' contexts (a big speed win on the hot path).
+#
+# Matching order:
+#   1. Exact email match in projects[*].emails (sender_email)
+#   2. Email domain match: "@acme.com" matches anyone @acme.com (sender_domain)
+#   3. Phone match in projects[*].phones (sender_phone) — for whatsapp
+#   4. Plaud meeting title contains a string in projects[*].plaud_title_patterns
+#      (plaud_title), OR a participant's email matches projects[*].plaud_participant_emails
+#      (plaud_participant)
+#   5. No match -> ingress invokes the agent with no routing_hint; the agent
+#      classifies, or routes to default_project ("triage") if not confident.
+#
+# risk_threshold gates auto-send. An item the agent rates STRICTLY BELOW the
+# threshold may be auto-sent; AT OR ABOVE it, it stages in pending-approval/.
+#   - risk_threshold: high  -> only HIGH stages; LOW + MED auto-send.   (loose)
+#   - risk_threshold: med   -> MED + HIGH stage; only LOW auto-sends.   (recommended)
+#   - risk_threshold: low   -> everything stages; nothing auto-sends.   (safest)
+
+default_project: triage          # where unrouted items go
+
+# Optional global caps. The ingress enforces; alerts you when exceeded.
+limits:
+  per_client_monthly_token_cap: 2000000   # soft cap; pause + notify when hit
+  daily_spend_alert_usd: 5
+
+projects:
+
+  acme:
+    drive_folder_id: "REPLACE_WITH_DRIVE_FOLDER_ID"   # ID of Clients/Acme/
+    display_name: "Acme Corp"
+    emails:
+      - "@acme.com"                 # any sender at this domain
+      - "ceo@acme.io"               # a specific external address
+      - "jane.counsel@lawfirm.com"  # their lawyer — note: counsel mail is forced HIGH by global-playbook
+    phones:
+      - "+15551234567"              # E.164; matched against whatsmeow sender JID
+    plaud_title_patterns:
+      - "Acme"
+      - "Project Falcon"            # the engagement's internal codename
+    plaud_participant_emails:
+      - "@acme.com"
+    risk_threshold: med
+
+  beta:
+    drive_folder_id: "REPLACE_WITH_DRIVE_FOLDER_ID"
+    display_name: "Beta Holdings"
+    emails:
+      - "@beta.io"
+    phones:
+      - "+15557654321"
+    plaud_title_patterns:
+      - "Beta"
+    risk_threshold: high            # this client: stage everything material, never auto-send
+
+  # The default destination for unrouted items. Mirror it in cowork as a Triage
+  # project; re-routes from here are logged to feedback/ so the reflection run
+  # can propose a routing.yaml rule.
+  triage:
+    drive_folder_id: "REPLACE_WITH_DRIVE_FOLDER_ID"
+    display_name: "Triage"
+    risk_threshold: low             # never auto-send anything from triage
